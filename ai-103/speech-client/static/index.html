@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Speech Agent</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --surface: #ffffff; --text: #1d2330; --muted: #667085;
+    --border: #e2e5ea; --accent: #2f6fed; --accent-text: #ffffff;
+    --user: #e8effd; --error: #c0362c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --surface: #1b2029; --text: #e6e9ef; --muted: #98a2b3;
+      --border: #2b3240; --accent: #5b8dff; --accent-text: #0d1117;
+      --user: #1f2b44; --error: #ff7b72;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .app { max-width: 820px; margin: 0 auto; min-height: 100vh; display: flex; flex-direction: column; padding: 0 16px; }
+  header { padding: 20px 0 12px; border-bottom: 1px solid var(--border); }
+  header h1 { margin: 0; font-size: 20px; }
+  header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  .examples { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 0; }
+  .examples button {
+    border: 1px solid var(--border); background: var(--surface); color: var(--text);
+    border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer;
+  }
+  .examples button:hover { border-color: var(--accent); }
+  #log { flex: 1; display: flex; flex-direction: column; gap: 12px; padding: 8px 0 16px; }
+  .msg { border: 1px solid var(--border); background: var(--surface); border-radius: 12px; padding: 12px 14px; overflow-wrap: anywhere; }
+  .msg.user { background: var(--user); align-self: flex-end; max-width: 85%; }
+  .msg.error { border-color: var(--error); color: var(--error); }
+  .who { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .body { white-space: pre-wrap; }
+  .body a { color: var(--accent); }
+  audio { display: block; width: 100%; margin-top: 10px; }
+  .empty { color: var(--muted); text-align: center; margin: auto 0; }
+  form { position: sticky; bottom: 0; background: var(--bg); padding: 12px 0 20px; display: flex; gap: 8px; }
+  textarea {
+    flex: 1; resize: vertical; min-height: 48px; max-height: 200px; padding: 12px;
+    border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); font: inherit;
+  }
+  textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  form button {
+    border: 0; border-radius: 10px; padding: 0 20px; background: var(--accent); color: var(--accent-text);
+    font: inherit; font-weight: 600; cursor: pointer;
+  }
+  form button:disabled { opacity: .5; cursor: wait; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>Speech Agent</h1>
+    <p>Agente: <span id="agent">…</span>. Sintetiza texto em voz ou transcreve áudio.</p>
+  </header>
+
+  <div class="examples">
+    <button type="button" data-prompt='Synthesize "Better a witty fool, than a foolish wit!" as speech using the voice "en-GB-SoniaNeural".'>Sintetizar (Sonia)</button>
+    <button type="button" data-prompt="Transcribe https://microsoftlearning.github.io/mslearn-ai-language/Labfiles/05-speech-tool/speech_2.wav">Transcrever speech_2.wav</button>
+  </div>
+
+  <div id="log"><p class="empty" id="empty">Escreve um prompt ou escolhe um exemplo acima.</p></div>
+
+  <form id="form">
+    <textarea id="prompt" placeholder="Escreve o prompt… (Enter envia, Shift+Enter nova linha)" required></textarea>
+    <button id="send" type="submit">Enviar</button>
+  </form>
+</div>
+
+<script>
+  const log = document.getElementById("log");
+  const form = document.getElementById("form");
+  const input = document.getElementById("prompt");
+  const send = document.getElementById("send");
+  let agentName = "agente";
+
+  fetch("/api/info").then(r => r.json()).then(d => {
+    agentName = d.agent || agentName;
+    document.getElementById("agent").textContent = agentName;
+  }).catch(() => {});
+
+  document.querySelectorAll(".examples button").forEach(b =>
+    b.addEventListener("click", () => { input.value = b.dataset.prompt; input.focus(); }));
+
+  input.addEventListener("keydown", e => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
+  });
+
+  function addMessage(kind, who, text) {
+    document.getElementById("empty")?.remove();
+    const el = document.createElement("div");
+    el.className = "msg " + kind;
+    const w = document.createElement("div");
+    w.className = "who"; w.textContent = who;
+    const body = document.createElement("div");
+    body.className = "body";
+    el.append(w, body);
+    renderText(body, el, text);
+    log.append(el);
+    el.scrollIntoView({ behavior: "smooth", block: "end" });
+    return el;
+  }
+
+  // Texto com links clicáveis; URLs de áudio ganham um player.
+  function renderText(body, el, text) {
+    const urlRe = /https?:\/\/[^\s)\]"'<>]+/g;
+    let last = 0, m;
+    const audios = new Set();
+    while ((m = urlRe.exec(text)) !== null) {
+      body.append(text.slice(last, m.index));
+      const url = m[0].replace(/[.,;:]+$/, "");
+      const a = document.createElement("a");
+      a.href = url; a.textContent = url; a.target = "_blank"; a.rel = "noopener";
+      body.append(a);
+      last = m.index + url.length;
+      if (/\.(wav|mp3|ogg|m4a)(\?|$)/i.test(url)) audios.add(url);
+    }
+    body.append(text.slice(last));
+    audios.forEach(src => {
+      const audio = document.createElement("audio");
+      audio.controls = true; audio.src = src;
+      el.append(audio);
+    });
+  }
+
+  form.addEventListener("submit", async e => {
+    e.preventDefault();
+    const prompt = input.value.trim();
+    if (!prompt) return;
+    addMessage("user", "Tu", prompt);
+    input.value = "";
+    send.disabled = true;
+    const pending = addMessage("agent", agentName, "A pensar…");
+    try {
+      const r = await fetch("/api/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt }),
+      });
+      const d = await r.json();
+      pending.remove();
+      if (!r.ok) addMessage("error", "Erro", d.error || r.statusText);
+      else addMessage("agent", d.agent || agentName, d.text || "(resposta vazia)");
+    } catch (err) {
+      pending.remove();
+      addMessage("error", "Erro", String(err));
+    } finally {
+      send.disabled = false;
+      input.focus();
+    }
+  });
+</script>
+</body>
+</html>
